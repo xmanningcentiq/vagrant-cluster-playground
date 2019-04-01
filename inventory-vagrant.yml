@@ -1,0 +1,29 @@
+---
+
+rhel_cluster:
+  hosts:
+    vgtrhdb01:
+      ansible_host: 192.168.61.121
+      ansible_ssh_user: vagrant
+      ansible_ssh_port: 22
+      ansible_ssh_private_key_file: .vagrant/machines/vgtrhdb01/virtualbox/private_key
+      corosync_cluster_master: true
+    vgtrhdb02:
+      ansible_host: 192.168.61.122
+      ansible_ssh_user: vagrant
+      ansible_ssh_port: 22
+      ansible_ssh_private_key_file: .vagrant/machines/vgtrhdb02/virtualbox/private_key
+
+sles_cluster:
+  hosts:
+    vgtsldb01:
+      ansible_host: 192.168.61.126
+      ansible_ssh_user: vagrant
+      ansible_ssh_port: 22
+      ansible_ssh_private_key_file: .vagrant/machines/vgtsldb01/virtualbox/private_key
+      corosync_cluster_master: true
+    vgtsldb02:
+      ansible_host: 192.168.61.127
+      ansible_ssh_user: vagrant
+      ansible_ssh_port: 22
+      ansible_ssh_private_key_file: .vagrant/machines/vgtsldb02/virtualbox/private_key

@@ -1,0 +1,15 @@
+standby_mode = on
+{% if ansible_os_family | lower == "redhat" %}
+{% for chost in groups['rhel_cluster'] %}
+{% if chost != inventory_hostname %}
+primary_conninfo = 'host={{ chost }} application_name={{ inventory_hostname }}'
+{% endif %}
+{% endfor %}
+{% elif ansible_os_family | lower == "suse" %}
+{% for chost in groups['sles_cluster'] %}
+{% if chost != inventory_hostname %}
+primary_conninfo = 'host={{ chost }} application_name={{ inventory_hostname }}'
+{% endif %}
+{% endfor %}
+{% endif %}
+recovery_target_timeline = 'latest'

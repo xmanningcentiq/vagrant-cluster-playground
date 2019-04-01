@@ -1,0 +1,48 @@
+totem {
+  version: 2
+  cluster_name: {{ ha_cluster_name }}
+  transport: udpu
+  interface {
+    ringnumber: 0
+    bindnetaddr: {{ corosync_private_ip }}
+    broadcast: yes
+    mcastport: 5405
+  }
+}
+
+quorum {
+  provider: corosync_votequorum
+  two_node: 1
+}
+
+nodelist {
+{% if ansible_os_family | lower == "redhat" %}
+{% for host in play_hosts %}
+{% if hostvars[host]['ansible_os_family'] | lower == "redhat" %}
+  node {
+    ring0_addr: {{ hostvars[host]['corosync_private_ip'] }}
+    name: {{ hostvars[host]['inventory_hostname'] }}
+    nodeid: {{ loop.index }}
+  }
+{% endif %}
+{% endfor %}
+{% elif ansible_os_family | lower == "suse" %}
+{% for host in play_hosts %}
+{% if hostvars[host]['ansible_os_family'] | lower == "suse" %}
+  node {
+    ring0_addr: {{ hostvars[host]['corosync_private_ip'] }}
+    name: {{ hostvars[host]['inventory_hostname'] }}
+    nodeid: {{ loop.index }}
+  }
+{% endif %}
+{% endfor %}
+{% endif %}
+
+}
+
+logging {
+  to_logfile: yes
+  logfile: /var/log/corosync/corosync.log
+  to_syslog: yes
+  timestamp: on
+}

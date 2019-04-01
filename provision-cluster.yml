@@ -1,0 +1,558 @@
+---
+
+- name: Provision a pacemaker/corosync cluster
+  hosts: all
+  become: true
+  vars:
+    postgres_repo: https://download.postgresql.org/pub/repos/yum/10/redhat/rhel-7-x86_64/pgdg-centos10-10-2.noarch.rpm
+    paf_resource_agent: https://github.com/ClusterLabs/PAF/releases/download/v2.2.1/resource-agents-paf-2.2.1-1.noarch.rpm
+    postgres_repl_user: rep
+    postgres_repl_pass: r_3pL!c4t0R
+    postgres_data_dir:
+      redhat: /var/lib/pgsql/10/data
+      suse: /var/lib/pgsql/data
+    ha_cluster_name: democluster
+    ha_postgres_network: 192.168.61.0
+    ha_cluster_ip:
+      redhat: 192.168.61.120
+      suse: 192.168.61.125
+    ha_ssh_fencing_agent:
+      redhat:
+        src: fence_dummy
+        dest: /sbin/fence_dummy
+      suse:
+        src: stonith-ssh
+        dest: /usr/lib64/stonith/plugins/external/ssh
+    ha_stonith_resource_prefix: stonith_
+    ha_affinity_prefix: location_
+    ha_vip_name: virtual_public_ip
+    ha_postgres_resource_name: pgsqld
+    ha_master_slave_set_name: master_slave_set_pgsql
+
+  handlers:
+    - name: start postgresql
+      service:
+        name: postgresql
+        state: started
+        enabled: false
+
+    - name: ensure replication user
+      postgresql_user:
+        name: "{{ postgres_repl_user }}"
+        password: "{{ postgres_repl_pass }}"
+        role_attr_flags: replication
+      become: true
+      become_user: postgres
+      vars:
+        ansible_ssh_pipelining: true
+
+    - name: stop postgresql
+      service:
+        name: postgresql
+        state: started
+        enabled: false
+
+    - name: reload systemd
+      command: systemctl daemon-reload
+      args:
+        warn: false
+
+  tasks:
+    - name: Ensure cluster networking parameters are set
+      set_fact:
+        corosync_private_ip: "{{ hostvars[inventory_hostname]['ansible_eth1']['ipv4']['address'] }}"
+
+    - name: Ensure cluster hostnames are in /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ hostvars[item]['corosync_private_ip'] }} {{ item }}"
+      loop: "{{ play_hosts }}"
+
+    - name: Ensure inital cluster master is in /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ hostvars[item]['corosync_private_ip'] }} masternode{{ hostvars[item]['ansible_os_family'] | lower }}"
+      when: hostvars[item]['corosync_cluster_master'] is defined
+            and hostvars[item]['corosync_cluster_master']
+      loop: "{{ play_hosts }}"
+
+    - name: Ensure Pacemaker + Corosync is installed (Red Hat)
+      yum:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - epel-release
+        - pcs
+        - pacemaker
+        - resource-agents
+        - fence-agents
+        - chrony
+        - python-psycopg2
+        - "{{ postgres_repo }}"
+        - "{{ paf_resource_agent }}"
+      when: ansible_os_family | lower == "redhat"
+
+    - name: Ensure Pacemaker + Corosync is installed (SLES)
+      zypper:
+        name: "{{ item }}"
+        state: present
+        disable_gpg_check: true
+      loop:
+        - crmsh
+        - corosync
+        - pacemaker
+        - resource-agents
+        - fence-agents
+        - chrony
+        - python2-psycopg2
+        - "{{ paf_resource_agent }}"
+      when: ansible_os_family | lower == "suse"
+
+    - name: Ensure Chronyd is started
+      service:
+        name: chronyd
+        state: started
+        enabled: true
+
+    - name: Ensure PostgreSQL is installed
+      package:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - postgresql10
+        - postgresql10-server
+        - postgresql10-contrib
+
+    - name: Ensure PostgreSQL data directory exists.
+      file:
+        path: "{{ postgres_data_dir[ansible_os_family | lower] }}"
+        owner: postgres
+        group: postgres
+        state: directory
+        mode: 0700
+
+    - name: Check to see if PostgreSQL service is suffixed with version number
+      stat:
+        path: /usr/lib/systemd/system/postgresql-10.service
+      register: systemctl_pgsql_suffix
+
+    - name: Check to see if PostgreSQL service is a symlink
+      stat:
+        path: /usr/lib/systemd/system/postgresql.service
+      register: systemctl_pgsql_symlink
+
+    - name: Ensure a symlink exists for suffixed PostgreSQL service
+      file:
+        src: /usr/lib/systemd/system/postgresql-10.service
+        dest: /usr/lib/systemd/system/postgresql.service
+        state: link
+      notify:
+        - reload systemd
+      when: systemctl_pgsql_suffix.stat.exists
+            and not systemctl_pgsql_symlink.stat.exists
+            and (systemctl_pgsql_symlink.stat.islnk is not defined
+                  or not systemctl_pgsql_symlink.stat.islnk)
+
+    - meta: flush_handlers
+
+    - name: Check to see if /usr/bin/initdb exists
+      stat:
+        path: /usr/bin/initdb
+      register: initdb_usr_bin
+
+    - name: Check to see if /usr/pgsql-10/bin/initdb exists
+      stat:
+        path: /usr/pgsql-10/bin/initdb
+      register: initdb_usr_pgsql_bin
+
+    - name: Ensure a symlink exists for /usr/bin/initdb
+      file:
+        src: /usr/pgsql-10/bin/initdb
+        dest: /usr/bin/initdb
+        state: link
+      when: initdb_usr_pgsql_bin.stat.exists
+            and not initdb_usr_bin.stat.exists
+            and (initdb_usr_bin.stat.islnk is not defined
+                  or not initdb_usr_bin.stat.islnk)
+
+    - name: Ensure PostgreSQL is initialized on master nodes
+      block:
+        - name: Ensure PostgreSQL database is initialized
+          command: "/usr/bin/initdb -D {{ postgres_data_dir[ansible_os_family | lower] }}"
+          args:
+            creates: "{{ postgres_data_dir[ansible_os_family | lower] }}/PG_VERSION"
+          become: true
+          become_user: postgres
+          notify:
+            - start postgresql
+            - ensure replication user
+          vars:
+            ansible_ssh_pipelining: true
+
+        - name: Ensure PostgreSQL postgresql.conf is configured
+          template:
+            src: templates/postgresql.conf.j2
+            dest: "{{ postgres_data_dir[ansible_os_family | lower] }}/postgresql.conf"
+            owner: postgres
+            group: postgres
+
+        - name: Ensure PostgreSQL pg_hba.conf is configured
+          template:
+            src: templates/pg_hba.conf.j2
+            dest: "{{ postgres_data_dir[ansible_os_family | lower] }}/pg_hba.conf"
+            owner: postgres
+            group: postgres
+
+      when: corosync_cluster_master is defined
+            and corosync_cluster_master
+
+    - meta: flush_handlers
+
+    - name: Ensure replicas are configured
+      block:
+        - name: Ensure base backup exists
+          command: >
+            pg_basebackup -X stream \
+              -D {{ postgres_data_dir[ansible_os_family | lower] }} \
+              -h masternode{{ ansible_os_family | lower }} \
+              -U postgres
+          become: true
+          become_user: postgres
+          args:
+            creates: "{{ postgres_data_dir[ansible_os_family | lower] }}/PG_VERSION"
+          vars:
+            ansible_ssh_pipelining: true
+
+      when: corosync_cluster_master is not defined
+            or not corosync_cluster_master
+
+    - name: Ensure PostgreSQL recovery.conf exists
+      template:
+        src: templates/recovery.conf.pcmk.j2
+        dest: "{{ postgres_data_dir[ansible_os_family | lower] }}/recovery.conf.pcmk"
+        owner: postgres
+        group: postgres
+
+    - name: Ensure PostgreSQL service is stopped
+      service:
+        name: postgresql
+        state: stopped
+
+    - name: Check to see if /etc/corosync/authkey has been created
+      stat:
+        path: /etc/corosync/authkey
+      register: corosync_auth_key
+
+    - name: Ensure cryptographic keys have been generated
+      block:
+        - name: Ensure haveged is installed on primary
+          package:
+            name: haveged
+            state: present
+
+        - name: Ensure haveged is started on primary
+          service:
+            name: haveged
+            state: started
+
+        - name: Ensure a corosync authkey is created on primary
+          command: corosync-keygen
+          args:
+            creates: /etc/corosync/authkey
+
+        - name: Ensure STONITH SSH key is generated
+          command: ssh-keygen -b 4096 -t rsa -f /tmp/stonith_rsa -q -N ""
+          args:
+            creates: /tmp/stonith_rsa
+
+        - name: Ensure haveged is absent on primary
+          package:
+            name: haveged
+            state: absent
+
+        - name: Ensure a copy of the corosync authkey is copied from primary
+          fetch:
+            src: /etc/corosync/authkey
+            dest: authkey
+            flat: true
+
+        - name: Ensure a copy of the STONITH SSH Key is copied from primary
+          fetch:
+            src: "/tmp/{{ item }}"
+            dest: "{{ item }}"
+            flat: true
+          loop:
+            - stonith_rsa
+            - stonith_rsa.pub
+      when: not corosync_auth_key.stat.exists and inventory_hostname == play_hosts[0]
+
+    - name: Ensure .ssh directory exists
+      file:
+        path: /root/.ssh
+        state: directory
+        mode: 0700
+
+    - name: Ensure the corosync authkey is present on all servers
+      copy:
+        src: authkey
+        dest: /etc/corosync/authkey
+        mode: 0400
+
+    - name: Ensure the STONITH SSH Key is present on all servers
+      copy:
+        src: stonith_rsa
+        dest: /root/.ssh/id_rsa
+        mode: 0600
+
+    - name: Ensure the STONITH SSH Public Key is present on all servers
+      copy:
+        src: stonith_rsa.pub
+        dest: /root/.ssh/authorized_keys
+        mode: 0600
+
+    - name: Ensure Corosync service is allowed to start
+      lineinfile:
+        path: /etc/default/corosync
+        line: START=yes
+        create: true
+
+    - name: Ensure Corosync service.d and log directories exists
+      file:
+        path: "{{ item }}"
+        state: directory
+      loop:
+        - /var/log/corosync
+        - /etc/corosync/service.d
+
+    - name: Ensure Corosync service is configured
+      template:
+        src: templates/corosync.conf.j2
+        dest: /etc/corosync/corosync.conf
+
+    - name: Ensure Pacemaker service is configured
+      template:
+        src: templates/pcmk.j2
+        dest: /etc/corosync/service.d/pcmk
+
+    - name: Ensure Corosync service is started
+      service:
+        name: corosync
+        state: started
+        enabled: false
+
+    - name: Ensure Pacemaker is started
+      service:
+        name: pacemaker
+        state: started
+        enabled: false
+
+    - name: Ensure pcsd is started
+      service:
+        name: pcsd
+        state: started
+        enabled: true
+      when: ansible_os_family | lower == "redhat"
+
+    - name: Ensure Dummy fencing agents are present
+      template:
+        src: templates/{{ ha_ssh_fencing_agent[ansible_os_family | lower]['src'] }}.j2
+        dest: "{{ ha_ssh_fencing_agent[ansible_os_family | lower]['dest'] }}"
+        mode: 0755
+
+    - name: Configure resources (RHEL)
+      block:
+        - name: Check the current state of the cluster
+          command: pcs status
+          failed_when: false
+          changed_when: false
+          register: ha_cluster_state
+
+        - name: Ensure cluster is in maintenance mode
+          command: >
+            pcs property set maintenance-mode=true
+
+        - name: Ensure the cluster migration-threshold is set
+          command: >
+            pcs resource defaults migration-threshold=5
+          when: ha_cluster_state.stdout.find(ha_stonith_resource_prefix) == -1
+
+        - name: Ensure the cluster resource-stickiness is set
+          command: >
+            pcs resource defaults resource-stickiness=10
+          when: ha_cluster_state.stdout.find(ha_stonith_resource_prefix) == -1
+
+        - name: Ensure STONITH Fencing agents are defined
+          command: >
+            pcs stonith create {{ ha_stonith_resource_prefix }}{{ item }} fence_dummy \
+              pcmk_host_list="{{ groups['rhel_cluster'] | join(',') }}" \
+              meta \
+                target-role="Started" --force
+          when: hostvars[item]['ansible_os_family'] | lower == "redhat"
+                and ha_cluster_state.stdout.find(ha_stonith_resource_prefix) == -1
+          loop: "{{ play_hosts }}"
+
+        - name: Ensure STONITH Fencing agents are located
+          command: >
+            pcs constraint location {{ ha_stonith_resource_prefix }}{{ item }} \
+              avoids {{ item }}=INFINITY
+          when: hostvars[item]['ansible_os_family'] | lower == "redhat"
+                and ha_cluster_state.stdout.find(ha_stonith_resource_prefix) == -1
+          loop: "{{ play_hosts }}"
+
+        - name: Ensure public virtual IP resource is defined
+          command: >
+            pcs resource create {{ ha_vip_name }} \
+              ocf:heartbeat:IPaddr2 ip="{{ ha_cluster_ip[ansible_os_family|lower] }}" \
+              cidr_netmask="32" op monitor interval="10s"
+          when: ha_cluster_state.stdout.find(ha_vip_name) == -1
+
+        - name: Ensure PostgreSQL resource is defined
+          command: >
+            pcs resource create {{ ha_postgres_resource_name }} ocf:heartbeat:pgsqlms \
+              bindir=/usr/pgsql-10/bin pgdata={{ postgres_data_dir[ansible_os_family | lower] }} \
+              op start timeout=60s \
+              op stop timeout=60s \
+              op promote timeout=30s \
+              op demote timeout=120s \
+              op monitor interval=15s timeout=10s role="Master" \
+              op monitor interval=16s timeout=10s role="Slave" \
+              op notify timeout=60s \
+            meta \
+              notify=true
+          when: ha_cluster_state.stdout.find(ha_postgres_resource_name) == -1
+
+        - name: Ensure Master-Slave set is defined
+          command: >
+            pcs resource master {{ ha_master_slave_set_name }} {{ ha_postgres_resource_name }} \
+              master-max=1 \
+              master-node-max=1 \
+              clone-max=2 \
+              clone-node-max=1 \
+              notify=true
+          when: ha_cluster_state.stdout.find(ha_master_slave_set_name) == -1
+
+        - name: Ensure Public VIP follows the master node
+          command: >
+            pcs constraint colocation add {{ ha_vip_name }} with master {{ ha_master_slave_set_name }} INFINITY
+          when: ha_cluster_state.stdout.find(ha_master_slave_set_name) == -1
+
+        - name: Ensure VIP stays on the master during a demote
+          shell: >
+            set -o pipefail &&
+            pcs constraint order promote {{ ha_master_slave_set_name }} then start {{ ha_vip_name }} \
+              symmetrical=false kind=Mandatory \
+            && pcs constraint order demote {{ ha_master_slave_set_name }} then stop {{ ha_vip_name }} \
+              symmetrical=false kind=Mandatory
+          args:
+            executable: /bin/bash
+          when: ha_cluster_state.stdout.find(ha_master_slave_set_name) == -1
+
+        - name: Ensure cluster is not in maintenance mode
+          command: >
+            pcs property set maintenance-mode=false
+
+      when: ansible_os_family | lower == "redhat"
+            and corosync_cluster_master is defined and corosync_cluster_master
+
+    - name: Configure resources (SLES)
+      block:
+        - name: Check the current state of the cluster
+          command: crm status
+          failed_when: false
+          changed_when: false
+          register: ha_cluster_state
+
+        - name: Ensure cluster is in maintenance mode
+          command: >
+            crm configure property maintenance-mode=true
+
+        - name: Ensure STONITH Fencing agents are defined
+          command: >
+            crm configure primitive {{ ha_stonith_resource_prefix }}{{ item }} stonith:external/ssh \
+              op monitor interval="25" timeout="25" start-delay="25" \
+              params \
+                hostlist="{{ item }}" \
+              meta \
+                target-role="Started"
+          when: hostvars[item]['ansible_os_family'] | lower == "suse"
+                and ha_cluster_state.stdout.find(ha_stonith_resource_prefix) == -1
+          loop: "{{ play_hosts }}"
+
+        - name: Ensure STONITH Fencing agents are located
+          command: >
+            crm configure location {{ ha_affinity_prefix }}{{ ha_stonith_resource_prefix }}{{ item }} \
+              {{ ha_stonith_resource_prefix }}{{ item }} -inf: {{ item }}
+          when: hostvars[item]['ansible_os_family'] | lower == "suse"
+                and ha_cluster_state.stdout.find(ha_stonith_resource_prefix) == -1
+          loop: "{{ play_hosts }}"
+
+        - name: Ensure Public virtual IP resource is defined
+          command: >
+            crm configure primitive {{ ha_vip_name }} \
+              ocf:heartbeat:IPaddr2 params ip="{{ ha_cluster_ip[ansible_os_family|lower] }}" \
+              cidr_netmask="32" op monitor interval="10s" \
+              meta migration-threshold="2" failure-timeout="60s" \
+              resource-stickiness="100"
+          when: ha_cluster_state.stdout.find(ha_vip_name) == -1
+
+        - name: Ensure PostgreSQL resource is defined
+          command: >
+            crm configure primitive {{ ha_postgres_resource_name }} ocf:heartbeat:pgsqlms \
+              bindir=/usr/bin pgdata={{ postgres_data_dir[ansible_os_family | lower] }} \
+              op start timeout=60s \
+              op stop timeout=60s \
+              op promote timeout=30s \
+              op demote timeout=120s \
+              op monitor interval=15s timeout=10s role="Master" \
+              op monitor interval=16s timeout=10s role="Slave" \
+              op notify timeout=60s \
+            meta \
+              notify=true
+          when: ha_cluster_state.stdout.find(ha_postgres_resource_name) == -1
+
+        - name: Ensure Master-Slave set is defined
+          command: >
+            crm configure master {{ ha_master_slave_set_name }} {{ ha_postgres_resource_name }} \
+              meta \
+                master-max=1 \
+                master-node-max=1 \
+                clone-max=2 \
+                clone-node-max=1 \
+                notify=true
+          when: ha_cluster_state.stdout.find(ha_master_slave_set_name) == -1
+
+        - name: Ensure Public VIP follows the master node
+          command: >
+            crm configure colocation {{ ha_vip_name }}_colo \
+              inf: {{ ha_vip_name }} {{ ha_master_slave_set_name }}:Master
+          when: ha_cluster_state.stdout.find(ha_master_slave_set_name) == -1
+
+        - name: Ensure VIP stays on the master during a demote
+          shell: >
+            set -o pipefail &&
+            crm configure order {{ ha_vip_name }}_post_promote \
+              Mandatory: {{ ha_master_slave_set_name }}:Promote {{ ha_vip_name }}:start symmetrical=false \
+            && crm configure order {{ ha_vip_name }}_post_demote \
+              Mandatory: {{ ha_master_slave_set_name }}:Demote {{ ha_vip_name }}:stop symmetrical=false
+          args:
+            executable: /bin/bash
+          when: ha_cluster_state.stdout.find(ha_master_slave_set_name) == -1
+
+        - name: Ensure cluster is not in maintenance mode
+          command: >
+            crm configure property maintenance-mode=false
+
+      when: ansible_os_family | lower == "suse"
+            and corosync_cluster_master is defined and corosync_cluster_master
+
+    - name: Ensure reset replication helper script is available to root
+      template:
+        src: templates/resetReplication.sh.j2
+        dest: /root/resetReplication.sh
+        mode: 0700
+
+    - name: Ensure Kernel Panic script is available to root
+      template:
+        src: templates/triggerKernelPanic.sh.j2
+        dest: /root/triggerKernelPanic.sh
+        mode: 0700
