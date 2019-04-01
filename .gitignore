@@ -1,0 +1,5 @@
+*.retry
+.vagrant
+authkey
+stonith_rsa
+stonith_rsa.pub
