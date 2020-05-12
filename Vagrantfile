@@ -3,7 +3,7 @@
 
 Vagrant.require_version ">= 1.9.7"
 
-$provisioningScript = <<-SCRIPT
+$suseProvisioningScript = <<-SCRIPT
 if [[ ! -f /VAGRANT_PROVISION ]] ; then
   echo "Provisioning VM, this may take a while!" | tee -a /VAGRANT_PROVISION
   echo "" | tee -a /VAGRANT_PROVISION
@@ -58,7 +58,7 @@ Vagrant.configure("2") do |config|
       sl1.vm.network     "private_network", ip: "192.168.61.126"
       sl1.vm.synced_folder ".", "/vagrant", disabled: true
 
-      sl1.vm.provision "shell", inline: $provisioningScript
+      sl1.vm.provision "shell", inline: $suseProvisioningScript
       sl1.vm.provision "shell", inline: $shareScript, run: "always"
       sl1.vm.provision "shell", path: ".provision/scripts/fix_fstab_uuid.sh"
 
@@ -82,7 +82,7 @@ Vagrant.configure("2") do |config|
         vb.customize ['sharedfolder', 'add', :id, '--name', 'vagrant', '--hostpath', PROJECT_ROOT]
       end
 
-      sl2.vm.provision "shell", inline: $provisioningScript
+      sl2.vm.provision "shell", inline: $suseProvisioningScript
       sl2.vm.provision "shell", inline: $shareScript, run: "always"
       sl2.vm.provision "shell", path: ".provision/scripts/fix_fstab_uuid.sh"
 

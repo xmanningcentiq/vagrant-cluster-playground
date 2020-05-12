@@ -11,7 +11,7 @@
     postgres_data_dir:
       redhat: /var/lib/pgsql/10/data
       suse: /var/lib/pgsql/data
-    ha_cluster_name: democluster
+    ha_cluster_name: "{{ ansible_os_family | lower }}-cluster"
     ha_postgres_network: 192.168.61.0
     ha_cluster_ip:
       redhat: 192.168.61.120
