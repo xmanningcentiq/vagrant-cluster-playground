@@ -7,12 +7,20 @@ rhel_cluster:
       ansible_ssh_user: vagrant
       ansible_ssh_port: 22
       ansible_ssh_private_key_file: .vagrant/machines/vgtrhdb01/virtualbox/private_key
+      ansible_python_interpreter: /usr/bin/python3
       corosync_cluster_master: true
     vgtrhdb02:
       ansible_host: 192.168.61.122
       ansible_ssh_user: vagrant
       ansible_ssh_port: 22
       ansible_ssh_private_key_file: .vagrant/machines/vgtrhdb02/virtualbox/private_key
+      ansible_python_interpreter: /usr/bin/python3
+    vgtrhqrm:
+      ansible_host: 192.168.61.123
+      ansible_ssh_user: vagrant
+      ansible_ssh_port: 22
+      ansible_ssh_private_key_file: .vagrant/machines/vgtrhqrm/virtualbox/private_key
+      ansible_python_interpreter: /usr/bin/python3
 
 sles_cluster:
   hosts:
@@ -21,9 +29,17 @@ sles_cluster:
       ansible_ssh_user: vagrant
       ansible_ssh_port: 22
       ansible_ssh_private_key_file: .vagrant/machines/vgtsldb01/virtualbox/private_key
+      ansible_python_interpreter: /usr/bin/python
       corosync_cluster_master: true
     vgtsldb02:
       ansible_host: 192.168.61.127
       ansible_ssh_user: vagrant
       ansible_ssh_port: 22
       ansible_ssh_private_key_file: .vagrant/machines/vgtsldb02/virtualbox/private_key
+      ansible_python_interpreter: /usr/bin/python
+    vgtslqrm:
+      ansible_host: 192.168.61.128
+      ansible_ssh_user: vagrant
+      ansible_ssh_port: 22
+      ansible_ssh_private_key_file: .vagrant/machines/vgtslqrm/virtualbox/private_key
+      ansible_python_interpreter: /usr/bin/python

@@ -4,18 +4,30 @@
   hosts: all
   become: true
   vars:
-    postgres_repo: https://download.postgresql.org/pub/repos/yum/reporpms/EL-7-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+    postgres_yum_repo: https://download.postgresql.org/pub/repos/yum/reporpms/EL-8-x86_64/pgdg-redhat-repo-latest.noarch.rpm
     paf_resource_agent: https://github.com/ClusterLabs/PAF/releases/download/v2.2.1/resource-agents-paf-2.2.1-1.noarch.rpm
     postgres_repl_user: rep
     postgres_repl_pass: r_3pL!c4t0R
     postgres_data_dir:
-      redhat: /var/lib/pgsql/10/data
+      redhat: /var/lib/pgsql/data
       suse: /var/lib/pgsql/data
+    postgres_package_list:
+      redhat:
+        - postgresql
+        - postgresql-server
+        - postgresql-contrib
+      suse:
+        - postgresql10
+        - postgresql10-server
+        - postgresql10-contrib
     ha_cluster_name: "{{ ansible_os_family | lower }}-cluster"
     ha_postgres_network: 192.168.61.0
     ha_cluster_ip:
       redhat: 192.168.61.120
       suse: 192.168.61.125
+    ha_quorum_node:
+      redhat: vgtrhqrm
+      suse: vgtslqrm
     ha_ssh_fencing_agent:
       redhat:
         src: fence_dummy
@@ -26,7 +38,7 @@
     ha_stonith_resource_prefix: stonith_
     ha_affinity_prefix: location_
     ha_vip_name: virtual_public_ip
-    ha_postgres_resource_name: pgsqld
+    ha_postgres_resource_name: cln_pgsqld
     ha_master_slave_set_name: master_slave_set_pgsql
 
   handlers:
@@ -61,6 +73,7 @@
     - name: Ensure cluster networking parameters are set
       set_fact:
         corosync_private_ip: "{{ hostvars[inventory_hostname]['ansible_eth1']['ipv4']['address'] }}"
+        corosync_quorum_node: "{{ ha_quorum_node[hostvars[inventory_hostname]['ansible_os_family'] | lower] }}"
 
     - name: Ensure cluster hostnames are in /etc/hosts
       lineinfile:
@@ -76,8 +89,19 @@
             and hostvars[item]['corosync_cluster_master']
       loop: "{{ play_hosts }}"
 
+    - name: Ensure HighAvailability Repository is installed (Red Hat)
+      yum_repository:
+        name: highavailability
+        description: CentOS-8 - HighAvailability
+        mirrorlist: http://mirrorlist.centos.org/?release=$releasever&arch=$basearch&repo=HighAvailability&infra=$infra
+        file: CentOS-HighAvailability
+        enabled: true
+        gpgcheck: true
+        gpgkey: file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial
+      when: ansible_os_family | lower == "redhat"
+
     - name: Ensure Pacemaker + Corosync is installed (Red Hat)
-      yum:
+      dnf:
         name: "{{ item }}"
         state: present
       loop:
@@ -87,8 +111,7 @@
         - resource-agents
         - fence-agents
         - chrony
-        - python-psycopg2
-        - "{{ postgres_repo }}"
+        - python3-psycopg2
         - "{{ paf_resource_agent }}"
       when: ansible_os_family | lower == "redhat"
 
@@ -114,69 +137,72 @@
         state: started
         enabled: true
 
-    - name: Ensure PostgreSQL is installed
-      package:
-        name: "{{ item }}"
-        state: present
-      loop:
-        - postgresql10
-        - postgresql10-server
-        - postgresql10-contrib
+    - name: Ensure PostgreSQL is installed across workers
+      block:
 
-    - name: Ensure PostgreSQL data directory exists.
-      file:
-        path: "{{ postgres_data_dir[ansible_os_family | lower] }}"
-        owner: postgres
-        group: postgres
-        state: directory
-        mode: 0700
+        - name: Ensure PostgreSQL is installed
+          package:
+            name: "{{ item }}"
+            state: present
+          loop: "{{ postgres_package_list[ansible_os_family | lower] }}"
 
-    - name: Check to see if PostgreSQL service is suffixed with version number
-      stat:
-        path: /usr/lib/systemd/system/postgresql-10.service
-      register: systemctl_pgsql_suffix
+        - name: Ensure PostgreSQL data directory exists.
+          file:
+            path: "{{ postgres_data_dir[ansible_os_family | lower] }}"
+            owner: postgres
+            group: postgres
+            state: directory
+            mode: 0700
 
-    - name: Check to see if PostgreSQL service is a symlink
-      stat:
-        path: /usr/lib/systemd/system/postgresql.service
-      register: systemctl_pgsql_symlink
+        - name: Check to see if PostgreSQL service is suffixed with version number
+          stat:
+            path: /usr/lib/systemd/system/postgresql-10.service
+          register: systemctl_pgsql_suffix
 
-    - name: Ensure a symlink exists for suffixed PostgreSQL service
-      file:
-        src: /usr/lib/systemd/system/postgresql-10.service
-        dest: /usr/lib/systemd/system/postgresql.service
-        state: link
-      notify:
-        - reload systemd
-      when: systemctl_pgsql_suffix.stat.exists
-            and not systemctl_pgsql_symlink.stat.exists
-            and (systemctl_pgsql_symlink.stat.islnk is not defined
-                  or not systemctl_pgsql_symlink.stat.islnk)
+        - name: Check to see if PostgreSQL service is a symlink
+          stat:
+            path: /usr/lib/systemd/system/postgresql.service
+          register: systemctl_pgsql_symlink
 
-    - meta: flush_handlers
+        - name: Ensure a symlink exists for suffixed PostgreSQL service
+          file:
+            src: /usr/lib/systemd/system/postgresql-10.service
+            dest: /usr/lib/systemd/system/postgresql.service
+            state: link
+          notify:
+            - reload systemd
+          when: systemctl_pgsql_suffix.stat.exists
+                and not systemctl_pgsql_symlink.stat.exists
+                and (systemctl_pgsql_symlink.stat.islnk is not defined
+                      or not systemctl_pgsql_symlink.stat.islnk)
 
-    - name: Check to see if /usr/bin/initdb exists
-      stat:
-        path: /usr/bin/initdb
-      register: initdb_usr_bin
+        - meta: flush_handlers
 
-    - name: Check to see if /usr/pgsql-10/bin/initdb exists
-      stat:
-        path: /usr/pgsql-10/bin/initdb
-      register: initdb_usr_pgsql_bin
+        - name: Check to see if /usr/bin/initdb exists
+          stat:
+            path: /usr/bin/initdb
+          register: initdb_usr_bin
 
-    - name: Ensure a symlink exists for /usr/bin/initdb
-      file:
-        src: /usr/pgsql-10/bin/initdb
-        dest: /usr/bin/initdb
-        state: link
-      when: initdb_usr_pgsql_bin.stat.exists
-            and not initdb_usr_bin.stat.exists
-            and (initdb_usr_bin.stat.islnk is not defined
-                  or not initdb_usr_bin.stat.islnk)
+        - name: Check to see if /usr/pgsql-10/bin/initdb exists
+          stat:
+            path: /usr/pgsql-10/bin/initdb
+          register: initdb_usr_pgsql_bin
+
+        - name: Ensure a symlink exists for /usr/bin/initdb
+          file:
+            src: /usr/pgsql-10/bin/initdb
+            dest: /usr/bin/initdb
+            state: link
+          when: initdb_usr_pgsql_bin.stat.exists
+                and not initdb_usr_bin.stat.exists
+                and (initdb_usr_bin.stat.islnk is not defined
+                      or not initdb_usr_bin.stat.islnk)
+
+      when: inventory_hostname != corosync_quorum_node
 
     - name: Ensure PostgreSQL is initialized on master nodes
       block:
+
         - name: Ensure PostgreSQL database is initialized
           command: "/usr/bin/initdb -D {{ postgres_data_dir[ansible_os_family | lower] }}"
           args:
@@ -210,6 +236,7 @@
 
     - name: Ensure replicas are configured
       block:
+
         - name: Ensure base backup exists
           command: >
             pg_basebackup -X stream \
@@ -223,20 +250,26 @@
           vars:
             ansible_ssh_pipelining: true
 
-      when: corosync_cluster_master is not defined
-            or not corosync_cluster_master
+      when: (corosync_cluster_master is not defined
+            or not corosync_cluster_master)
+            and inventory_hostname != corosync_quorum_node
 
-    - name: Ensure PostgreSQL recovery.conf exists
-      template:
-        src: templates/recovery.conf.pcmk.j2
-        dest: "{{ postgres_data_dir[ansible_os_family | lower] }}/recovery.conf.pcmk"
-        owner: postgres
-        group: postgres
+    - name: Ensure PostgreSQL is configured
+      block:
 
-    - name: Ensure PostgreSQL service is stopped
-      service:
-        name: postgresql
-        state: stopped
+        - name: Ensure PostgreSQL recovery.conf exists
+          template:
+            src: templates/recovery.conf.pcmk.j2
+            dest: "{{ postgres_data_dir[ansible_os_family | lower] }}/recovery.conf.pcmk"
+            owner: postgres
+            group: postgres
+
+        - name: Ensure PostgreSQL service is stopped
+          service:
+            name: postgresql
+            state: stopped
+
+      when: inventory_hostname != corosync_quorum_node
 
     - name: Check to see if /etc/corosync/authkey has been created
       stat:
@@ -245,6 +278,7 @@
 
     - name: Ensure cryptographic keys have been generated
       block:
+
         - name: Ensure haveged is installed on primary
           package:
             name: haveged
@@ -284,6 +318,7 @@
           loop:
             - stonith_rsa
             - stonith_rsa.pub
+
       when: not corosync_auth_key.stat.exists and inventory_hostname == play_hosts[0]
 
     - name: Ensure .ssh directory exists
@@ -361,6 +396,7 @@
 
     - name: Configure resources (RHEL)
       block:
+
         - name: Check the current state of the cluster
           command: pcs status
           failed_when: false
@@ -423,7 +459,7 @@
 
         - name: Ensure Master-Slave set is defined
           command: >
-            pcs resource master {{ ha_master_slave_set_name }} {{ ha_postgres_resource_name }} \
+            pcs resource promotable {{ ha_postgres_resource_name }} \
               master-max=1 \
               master-node-max=1 \
               clone-max=2 \
@@ -447,6 +483,14 @@
             executable: /bin/bash
           when: ha_cluster_state.stdout.find(ha_master_slave_set_name) == -1
 
+        - name: Ensure the quorum node does not run PostgreSQL
+          command: >
+            pcs constraint location add no-probe-quorum \
+              { {{ ha_master_slave_set_name }} {{ ha_vip_name }} } \
+              {{ corosync_quorum_node }} \
+              -INFINITY resource-discovery=never
+          when: ha_cluster_state.stdout.find(ha_master_slave_set_name) == -1
+
         - name: Ensure cluster is not in maintenance mode
           command: >
             pcs property set maintenance-mode=false
@@ -456,6 +500,7 @@
 
     - name: Configure resources (SLES)
       block:
+
         - name: Check the current state of the cluster
           command: crm status
           failed_when: false
@@ -476,6 +521,7 @@
                 target-role="Started"
           when: hostvars[item]['ansible_os_family'] | lower == "suse"
                 and ha_cluster_state.stdout.find(ha_stonith_resource_prefix) == -1
+                and item != corosync_quorum_node
           loop: "{{ play_hosts }}"
 
         - name: Ensure STONITH Fencing agents are located
@@ -505,14 +551,12 @@
               op demote timeout=120s \
               op monitor interval=15s timeout=10s role="Master" \
               op monitor interval=16s timeout=10s role="Slave" \
-              op notify timeout=60s \
-            meta \
-              notify=true
+              op notify timeout=60s
           when: ha_cluster_state.stdout.find(ha_postgres_resource_name) == -1
 
         - name: Ensure Master-Slave set is defined
           command: >
-            crm configure master {{ ha_master_slave_set_name }} {{ ha_postgres_resource_name }} \
+            crm configure ms {{ ha_master_slave_set_name }} {{ ha_postgres_resource_name }} \
               meta \
                 master-max=1 \
                 master-node-max=1 \
@@ -525,6 +569,13 @@
           command: >
             crm configure colocation {{ ha_vip_name }}_colo \
               inf: {{ ha_vip_name }} {{ ha_master_slave_set_name }}:Master
+          when: ha_cluster_state.stdout.find(ha_master_slave_set_name) == -1
+
+        - name: Ensure the quorum node does not run PostgreSQL
+          command: >
+            crm configure location no-probe-quorum \
+              { {{ ha_master_slave_set_name }} {{ ha_vip_name }} } \
+              resource-discovery=never -inf: {{ corosync_quorum_node }}
           when: ha_cluster_state.stdout.find(ha_master_slave_set_name) == -1
 
         - name: Ensure VIP stays on the master during a demote
@@ -541,6 +592,10 @@
         - name: Ensure cluster is not in maintenance mode
           command: >
             crm configure property maintenance-mode=false
+
+        - name: Ensure clone set is cleaned up
+          command: >
+            crm resource cleanup {{ ha_postgres_resource_name }}
 
       when: ansible_os_family | lower == "suse"
             and corosync_cluster_master is defined and corosync_cluster_master

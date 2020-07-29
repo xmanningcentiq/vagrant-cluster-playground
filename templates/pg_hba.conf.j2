@@ -86,10 +86,10 @@ local   all             all                                     trust
 host    all             all             127.0.0.1/32            trust
 # IPv6 local connections:
 host    all             all             ::1/128                 trust
-host    all             all             192.168.61.0/24         trust
+host    all             all             {{ ha_postgres_network }}/24         trust
 # Allow replication connections from localhost, by a user with the
 # replication privilege.
 local   replication     all                                     trust
 host    replication     all             127.0.0.1/32            trust
 host    replication     all             ::1/128                 trust
-host    replication     all             192.168.61.0/24         trust
+host    replication     all             {{ ha_postgres_network }}/24         trust
