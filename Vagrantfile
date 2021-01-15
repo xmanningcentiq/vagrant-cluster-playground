@@ -66,7 +66,9 @@ Vagrant.configure("2") do |config|
         vb.gui    = false
         vb.name   = "SUSE Cluster Node 1"
         vb.memory = "512"
-        vb.customize ['sharedfolder', 'add', :id, '--name', 'vagrant', '--hostpath', PROJECT_ROOT]
+        unless system('VBoxManage showvminfo "SUSE Cluster Node 1" | grep -qiE "Name:\s+\'vagrant\', Host path:"')
+          vb.customize ['sharedfolder', 'add', :id, '--name', 'vagrant', '--hostpath', PROJECT_ROOT]
+        end
       end
   end
   config.vm.define "vgtsldb02" do |sl2|
@@ -79,7 +81,9 @@ Vagrant.configure("2") do |config|
         vb.gui    = false
         vb.name   = "SUSE Cluster Node 2"
         vb.memory = "512"
-        vb.customize ['sharedfolder', 'add', :id, '--name', 'vagrant', '--hostpath', PROJECT_ROOT]
+        unless system('VBoxManage showvminfo "SUSE Cluster Node 2" | grep -qiE "Name:\s+\'vagrant\', Host path:"')
+          vb.customize ['sharedfolder', 'add', :id, '--name', 'vagrant', '--hostpath', PROJECT_ROOT]
+        end
       end
 
       sl2.vm.provision "shell", inline: $suseProvisioningScript
